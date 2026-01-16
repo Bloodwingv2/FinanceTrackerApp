@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Modal, Alert,
   StyleSheet, Platform, SafeAreaView, KeyboardAvoidingView, Animated,
-  FlatList, Switch,
+  FlatList, Switch, Share,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system';
+import * as db from '../db';
 
 type TransactionType = 'expense' | 'income';
 type Frequency = 'daily' | 'weekly' | 'monthly';
@@ -109,22 +110,39 @@ const FinanceTracker: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const txData = await AsyncStorage.getItem('transactions');
-      const recData = await AsyncStorage.getItem('recurringTransactions');
-      if (txData) setTransactions(JSON.parse(txData));
-      else { setTransactions(initialData); await AsyncStorage.setItem('transactions', JSON.stringify(initialData)); }
-      if (recData) setRecurringTransactions(JSON.parse(recData));
-    } catch (error) { console.error('Error loading data:', error); }
+      await db.initializeDatabase();
+      const { transactions: txs, recurringTransactions: recs } = await db.getAllData();
+      if (txs.length === 0) {
+        // Initialize with sample data if empty
+        for (const tx of initialData) {
+          await db.addTransaction(tx);
+        }
+        const newTxs = await db.getAllData();
+        setTransactions(newTxs.transactions);
+      } else {
+        setTransactions(txs);
+      }
+      setRecurringTransactions(recs);
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
   };
 
   const saveData = async (txs?: Transaction[], recs?: RecurringTransaction[]) => {
     try {
-      await AsyncStorage.setItem('transactions', JSON.stringify(txs || transactions));
-      if (recs) await AsyncStorage.setItem('recurringTransactions', JSON.stringify(recs));
-    } catch (error) { console.error('Error saving data:', error); }
+      // Data is already saved via db methods, this is kept for compatibility
+      if (txs && txs.length > 0) {
+        // Sync transactions to db if needed
+      }
+      if (recs && recs.length > 0) {
+        // Sync recurring to db if needed
+      }
+    } catch (error) {
+      console.error('Error saving data:', error);
+    }
   };
 
-  const checkAndAddRecurringTransactions = () => {
+  const checkAndAddRecurringTransactions = async () => {
     if (recurringTransactions.length === 0) return;
     const today = new Date().toISOString().split('T')[0];
     let updated = false;
@@ -142,9 +160,24 @@ const FinanceTracker: React.FC = () => {
       return rt;
     });
     if (updated) {
-      setTransactions(newTransactions);
-      setRecurringTransactions(updatedRecurring);
-      saveData(newTransactions, updatedRecurring);
+      try {
+        for (const tx of newTransactions) {
+          const existsLocally = transactions.find(t => t.id === tx.id);
+          if (!existsLocally) {
+            await db.addTransaction(tx);
+          }
+        }
+        for (const rt of updatedRecurring) {
+          const changed = recurringTransactions.find(r => r.id === rt.id && r.nextDueDate !== rt.nextDueDate);
+          if (changed) {
+            await db.updateRecurringTransaction(rt.id, rt);
+          }
+        }
+        setTransactions(newTransactions);
+        setRecurringTransactions(updatedRecurring);
+      } catch (error) {
+        console.error('Error adding recurring transactions:', error);
+      }
     }
   };
 
@@ -250,35 +283,55 @@ const FinanceTracker: React.FC = () => {
     if (!formData.description || !formData.amount) return;
     const amount = formData.type === 'expense' ? -Math.abs(parseFloat(formData.amount)) : Math.abs(parseFloat(formData.amount));
 
-    if (formData.isRecurring) {
-      let updatedRecurring: RecurringTransaction[];
-      if (editingId && editingId.toString().startsWith('r')) {
-        const recId = parseInt(editingId.toString().substring(1));
-        updatedRecurring = recurringTransactions.map(rt =>
-          rt.id === recId ? { ...rt, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment, frequency: formData.frequency, nextDueDate: formData.nextDueDate } : rt
-        );
+    try {
+      if (formData.isRecurring) {
+        let updatedRecurring: RecurringTransaction[];
+        if (editingId && editingId.toString().startsWith('r')) {
+          const recId = parseInt(editingId.toString().substring(1));
+          await db.updateRecurringTransaction(recId, {
+            description: formData.description, amount, type: formData.type,
+            category: formData.category, payment: formData.payment,
+            frequency: formData.frequency, nextDueDate: formData.nextDueDate
+          });
+          updatedRecurring = recurringTransactions.map(rt =>
+            rt.id === recId ? { ...rt, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment, frequency: formData.frequency, nextDueDate: formData.nextDueDate } : rt
+          );
+        } else {
+          await db.addRecurringTransaction({
+            description: formData.description, amount, type: formData.type,
+            category: formData.category, payment: formData.payment,
+            frequency: formData.frequency, nextDueDate: formData.nextDueDate
+          });
+          const newId = Math.max(...recurringTransactions.map(r => r.id), 0) + 1;
+          updatedRecurring = [...recurringTransactions, { id: newId, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment, frequency: formData.frequency, nextDueDate: formData.nextDueDate }];
+        }
+        setRecurringTransactions(updatedRecurring);
       } else {
-        const newId = Math.max(...recurringTransactions.map(r => r.id), 0) + 1;
-        updatedRecurring = [...recurringTransactions, { id: newId, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment, frequency: formData.frequency, nextDueDate: formData.nextDueDate }];
+        let updatedTransactions: Transaction[];
+        if (editingId && !editingId.toString().startsWith('r')) {
+          await db.updateTransaction(editingId as number, {
+            date: formData.date, description: formData.description, amount,
+            type: formData.type, category: formData.category, payment: formData.payment
+          });
+          updatedTransactions = transactions.map(t =>
+            t.id === editingId ? { ...t, date: formData.date, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment } : t
+          );
+        } else {
+          await db.addTransaction({
+            date: formData.date, description: formData.description, amount,
+            type: formData.type, category: formData.category, payment: formData.payment
+          });
+          const newId = Math.max(...transactions.map(t => t.id), 0) + 1;
+          updatedTransactions = [...transactions, { id: newId, date: formData.date, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment }];
+        }
+        setTransactions(updatedTransactions);
       }
-      setRecurringTransactions(updatedRecurring);
-      await saveData(transactions, updatedRecurring);
-    } else {
-      let updatedTransactions: Transaction[];
-      if (editingId && !editingId.toString().startsWith('r')) {
-        updatedTransactions = transactions.map(t =>
-          t.id === editingId ? { ...t, date: formData.date, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment } : t
-        );
-      } else {
-        const newId = Math.max(...transactions.map(t => t.id), 0) + 1;
-        updatedTransactions = [...transactions, { id: newId, date: formData.date, description: formData.description, amount, type: formData.type, category: formData.category, payment: formData.payment }];
-      }
-      setTransactions(updatedTransactions);
-      await saveData(updatedTransactions, recurringTransactions);
+      setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', category: 'Groceries', payment: 'Bank', isRecurring: false, frequency: 'monthly', nextDueDate: new Date().toISOString().split('T')[0] });
+      setShowForm(false);
+      setEditingId(null);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save transaction: ' + (error as Error).message);
     }
-    setFormData({ date: new Date().toISOString().split('T')[0], description: '', amount: '', type: 'expense', category: 'Groceries', payment: 'Bank', isRecurring: false, frequency: 'monthly', nextDueDate: new Date().toISOString().split('T')[0] });
-    setShowForm(false);
-    setEditingId(null);
   };
 
   const handleEdit = (t: Transaction) => {
@@ -297,70 +350,167 @@ const FinanceTracker: React.FC = () => {
   const handleDelete = (id: number) => {
     Alert.alert('Delete Transaction', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { const updated = transactions.filter(t => t.id !== id); setTransactions(updated); await saveData(updated, recurringTransactions); } }
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          try {
+            await db.deleteTransaction(id);
+            const updated = transactions.filter(t => t.id !== id);
+            setTransactions(updated);
+          } catch (error) {
+            Alert.alert('Error', 'Failed to delete transaction');
+          }
+        }
+      }
     ]);
   };
 
   const handleDeleteRecurring = (id: number) => {
     Alert.alert('Delete Recurring Transaction', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => { const updated = recurringTransactions.filter(rt => rt.id !== id); setRecurringTransactions(updated); await saveData(transactions, updated); } }
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
+          try {
+            await db.deleteRecurringTransaction(id);
+            const updated = recurringTransactions.filter(rt => rt.id !== id);
+            setRecurringTransactions(updated);
+          } catch (error) {
+            Alert.alert('Error', 'Failed to delete recurring transaction');
+          }
+        }
+      }
     ]);
   };
 
   const exportToJSON = async () => {
     try {
+      // Export as JSON instead of SQLite for broader compatibility
       const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
       const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.json`;
-      // For now, we'll just alert with the data that could be exported
-      Alert.alert('Export', 'Data is ready to export. Copy this:\n\n' + jsonString.substring(0, 100) + '...');
+      
+      // Write to cache directory
+      const cacheDir = (FileSystem as any).cacheDirectory;
+      if (cacheDir) {
+        const fileUri = `${cacheDir}${filename}`;
+        await FileSystem.writeAsStringAsync(fileUri, jsonString);
+        
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: 'application/json',
+            dialogTitle: `Share ${filename}`,
+          });
+          Alert.alert('Success', 'Data exported and ready to share!');
+          return;
+        }
+      }
+      
+      // Fallback: Share as text
+      await Share.share({
+        message: jsonString,
+        title: filename,
+      });
+      Alert.alert('Export Ready', `${filename} is ready to share!`);
     } catch (error) {
-      Alert.alert('Error', 'Failed to prepare export: ' + (error as Error).message);
+      if ((error as any).message !== 'User did not share') {
+        Alert.alert('Error', 'Failed to export data: ' + (error as Error).message);
+      }
     }
   };
 
   const importFromJSON = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ type: 'application/json' });
+      // Support both SQLite .db files and JSON files
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/json', 'application/octet-stream', 'application/x-sqlite3']
+      });
       
       if (!result.canceled && result.assets && result.assets[0]) {
         const fileUri = result.assets[0].uri;
+        const filename = result.assets[0].name;
+        
+        // Check if it's a database file or JSON
+        if (filename.endsWith('.db')) {
+          // For now, show instructions to replace database
+          Alert.alert(
+            'SQLite Database Import',
+            'Database imports require app restart. This feature will be available in the next update.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+        
+        // Handle JSON import
         const content = await (await fetch(fileUri)).text();
         const data = JSON.parse(content);
         
-        if (!data.transactions || !Array.isArray(data.transactions)) {
-          Alert.alert('Error', 'Invalid JSON format. Expected transactions array.');
+        // Handle both formats: { transactions: [...], recurringTransactions: [...] } and just [...]
+        let txs: Transaction[] = [];
+        let recs: RecurringTransaction[] = [];
+        
+        if (Array.isArray(data)) {
+          // Format: just an array of transactions
+          txs = data;
+          recs = [];
+        } else if (data.transactions && Array.isArray(data.transactions)) {
+          // Format: { transactions: [...], recurringTransactions: [...] }
+          txs = data.transactions;
+          recs = data.recurringTransactions || [];
+        } else {
+          Alert.alert('Error', 'Invalid JSON format. Expected transactions array or { transactions: [...] } object.');
           return;
         }
         
         Alert.alert(
           'Import Data',
-          `Found ${data.transactions.length} transactions and ${data.recurringTransactions?.length || 0} recurring transactions.\n\nHow would you like to import?`,
+          `Found ${txs.length} transactions and ${recs.length} recurring transactions.\n\nHow would you like to import?`,
           [
             {
               text: 'Merge',
               onPress: async () => {
-                const mergedTx = [
-                  ...transactions,
-                  ...data.transactions.map((t: Transaction) => ({ ...t, id: Math.max(...transactions.map((x: Transaction) => x.id), 0) + Math.random() }))
-                ];
-                const mergedRec = [
-                  ...recurringTransactions,
-                  ...(data.recurringTransactions || []).map((rt: RecurringTransaction) => ({ ...rt, id: Math.max(...recurringTransactions.map((x: RecurringTransaction) => x.id), 0) + Math.random() }))
-                ];
-                setTransactions(mergedTx);
-                setRecurringTransactions(mergedRec);
-                await saveData(mergedTx, mergedRec);
-                Alert.alert('Success', 'Data merged successfully!');
+                try {
+                  const mergedTx = [
+                    ...transactions,
+                    ...txs.map((t: Transaction) => ({ ...t, id: Math.max(...transactions.map((x: Transaction) => x.id), 0) + Math.random() }))
+                  ];
+                  const mergedRec = [
+                    ...recurringTransactions,
+                    ...recs.map((rt: RecurringTransaction) => ({ ...rt, id: Math.max(...recurringTransactions.map((x: RecurringTransaction) => x.id), 0) + Math.random() }))
+                  ];
+                  
+                  // Save merged data to database
+                  for (const tx of txs) {
+                    await db.addTransaction(tx);
+                  }
+                  for (const rt of recs) {
+                    await db.addRecurringTransaction(rt);
+                  }
+                  
+                  setTransactions(mergedTx);
+                  setRecurringTransactions(mergedRec);
+                  Alert.alert('Success', 'Data merged successfully!');
+                } catch (error) {
+                  Alert.alert('Error', 'Failed to merge data: ' + (error as Error).message);
+                }
               }
             },
             {
               text: 'Replace',
               onPress: async () => {
-                setTransactions(data.transactions);
-                setRecurringTransactions(data.recurringTransactions || []);
-                await saveData(data.transactions, data.recurringTransactions || []);
-                Alert.alert('Success', 'Data replaced successfully!');
+                try {
+                  await db.clearAllData();
+                  
+                  for (const tx of txs) {
+                    await db.addTransaction(tx);
+                  }
+                  for (const rt of recs) {
+                    await db.addRecurringTransaction(rt);
+                  }
+                  
+                  setTransactions(txs);
+                  setRecurringTransactions(recs);
+                  Alert.alert('Success', 'Data replaced successfully!');
+                } catch (error) {
+                  Alert.alert('Error', 'Failed to replace data: ' + (error as Error).message);
+                }
               },
               style: 'destructive'
             },
@@ -428,6 +578,17 @@ const FinanceTracker: React.FC = () => {
               <Text style={[styles.statValue, monthlyData.totalBalance < 0 && { color: '#fca5a5' }]}>€{monthlyData.totalBalance.toFixed(2)}</Text>
             </View>
           </View>
+
+          {/* Carryforward Section */}
+          {monthlyData.carryForward !== 0 && (
+            <View style={[styles.statCard, { marginHorizontal: 12, marginVertical: 8, borderColor: '#3b82f6', borderWidth: 1.5 }]}>
+              <Text style={styles.statLabel}>Carried from Previous Months</Text>
+              <Text style={[styles.statValue, monthlyData.carryForward < 0 && { color: '#fca5a5' }]}>€{monthlyData.carryForward.toFixed(2)}</Text>
+              <Text style={{ color: '#94a3b8', fontSize: 12, marginTop: 8, textAlign: 'center' }}>
+                {monthlyData.carryForward > 0 ? '+' : ''}€{monthlyData.carryForward.toFixed(2)} included in total
+              </Text>
+            </View>
+          )}
 
           {/* Categories */}
           {categoryBreakdown.length > 0 && (
@@ -663,35 +824,35 @@ const FinanceTracker: React.FC = () => {
 export default FinanceTracker;
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  scrollView: { flex: 1 },
-  header: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#334155' },
-  headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
-  title: { fontSize: 20, fontWeight: '700', color: '#fff' },
-  headerButtons: { flexDirection: 'row', gap: 8 },
-  monthButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#334155', padding: 12, borderRadius: 8 },
-  monthButtonText: { color: '#fff', fontWeight: '600', fontSize: 13 },
-  exportButton: { backgroundColor: '#334155', padding: 12, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
-  statsContainer: { flexDirection: 'row', flexWrap: 'wrap', padding: 12, gap: 10 },
-  statCard: { width: '48%', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#475569' },
+  container: { flex: 1, backgroundColor: '#0f172a', paddingTop: 0 },
+  scrollView: { flex: 1, paddingBottom: 16 },
+  header: { padding: 16, paddingTop: 12, paddingBottom: 12, borderBottomWidth: 2, borderBottomColor: '#475569', backgroundColor: '#0f172a' },
+  headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  title: { fontSize: 18, fontWeight: '700', color: '#fff', flex: 1 },
+  headerButtons: { flexDirection: 'row', gap: 6, justifyContent: 'flex-end' },
+  monthButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#334155', padding: 10, borderRadius: 8, marginRight: 4 },
+  monthButtonText: { color: '#fff', fontWeight: '600', fontSize: 12 },
+  exportButton: { backgroundColor: '#334155', padding: 10, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginLeft: 4 },
+  statsContainer: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 12, paddingVertical: 10, gap: 10, marginBottom: 4 },
+  statCard: { width: '48%', padding: 14, borderRadius: 12, borderWidth: 1.5, borderColor: '#475569' },
   expenseCard: { backgroundColor: '#7f1d1d' },
   incomeCard: { backgroundColor: '#14532d' },
   balanceCard: { backgroundColor: '#1e3a8a' },
   totalCard: { backgroundColor: '#581c87' },
   statLabel: { color: '#cbd5e1', fontSize: 11, marginBottom: 4 },
   statValue: { color: '#fff', fontSize: 18, fontWeight: '700' },
-  categoryContainer: { margin: 12, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#334155', backgroundColor: '#1e293b' },
-  categoryTitle: { color: '#e5e7eb', fontSize: 14, fontWeight: '600', marginBottom: 12 },
+  categoryContainer: { marginHorizontal: 12, marginVertical: 8, paddingHorizontal: 12, paddingVertical: 14, borderRadius: 12, borderWidth: 1.5, borderColor: '#475569', backgroundColor: '#1e293b' },
+  categoryTitle: { color: '#e5e7eb', fontSize: 13, fontWeight: '600', marginBottom: 12 },
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   categoryItem: { width: '48%', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#475569', backgroundColor: '#334155' },
   categoryName: { color: '#9ca3af', fontSize: 11 },
   categoryAmount: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 4 },
   categoryPercent: { color: '#6b7280', fontSize: 10, marginTop: 2 },
-  addButton: { margin: 12, marginTop: 8 },
-  addButtonGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 16, borderRadius: 12, backgroundColor: '#2563eb' },
+  addButton: { marginHorizontal: 12, marginVertical: 8, borderRadius: 12, overflow: 'hidden' },
+  addButtonGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 12, backgroundColor: '#2563eb' },
   addButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  formContainer: { margin: 12, padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#334155', backgroundColor: '#1e293b' },
-  formTitle: { fontSize: 18, fontWeight: '700', color: '#fff', marginBottom: 16 },
+  formContainer: { marginHorizontal: 12, marginVertical: 10, paddingHorizontal: 14, paddingVertical: 16, borderRadius: 12, borderWidth: 1.5, borderColor: '#475569', backgroundColor: '#1e293b' },
+  formTitle: { fontSize: 16, fontWeight: '700', color: '#fff', marginBottom: 14 },
   typeSelector: { flexDirection: 'row', gap: 8, marginBottom: 12 },
   typeButton: { flex: 1, padding: 12, borderRadius: 8, backgroundColor: '#334155', alignItems: 'center' },
   typeButtonActive: { backgroundColor: '#dc2626' },
@@ -719,13 +880,13 @@ const styles = StyleSheet.create({
   saveButtonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   cancelButton: { backgroundColor: '#334155', padding: 12, borderRadius: 8, marginTop: 10, alignItems: 'center' },
   cancelButtonText: { color: '#9ca3af', fontSize: 14, fontWeight: '600' },
-  tabsContainer: { flexDirection: 'row', padding: 12, gap: 8 },
-  tab: { flex: 1, flexDirection: 'row', padding: 12, borderRadius: 10, backgroundColor: '#1e293b', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  tabsContainer: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 8, gap: 6, marginBottom: 4 },
+  tab: { flex: 1, flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 8, borderRadius: 10, backgroundColor: '#1e293b', alignItems: 'center', justifyContent: 'center', gap: 4 },
   tabActive: { backgroundColor: '#2563eb' },
-  tabText: { color: '#9ca3af', fontWeight: '600', fontSize: 11 },
-  tabTextActive: { color: '#fff', fontWeight: '600', fontSize: 11 },
-  listContainer: { padding: 12 },
-  transactionItem: { borderWidth: 1, borderColor: '#334155', borderRadius: 10, padding: 12, marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1e293b' },
+  tabText: { color: '#9ca3af', fontWeight: '600', fontSize: 10 },
+  tabTextActive: { color: '#fff', fontWeight: '600', fontSize: 10 },
+  listContainer: { paddingHorizontal: 12, paddingVertical: 8 },
+  transactionItem: { borderWidth: 1.5, borderColor: '#475569', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8, marginHorizontal: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1e293b' },
   txLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   txDate: { color: '#9ca3af', fontSize: 11, fontWeight: '600', minWidth: 45 },
   txDesc: { color: '#fff', fontSize: 14, fontWeight: '600' },
@@ -737,8 +898,8 @@ const styles = StyleSheet.create({
   recFreq: { color: '#a78bfa', fontSize: 10, fontWeight: '600', textTransform: 'uppercase', minWidth: 45 },
   emptyText: { color: '#9ca3af', fontSize: 15, textAlign: 'center', paddingVertical: 40 },
   emptyContainer: { alignItems: 'center', paddingVertical: 60 },
-  insightCard: { borderWidth: 1, borderColor: '#475569', borderRadius: 10, padding: 14, marginBottom: 10, backgroundColor: '#1e293b' },
-  insightLabel: { color: '#e5e7eb', fontWeight: '600', fontSize: 13, marginBottom: 10 },
+  insightCard: { borderWidth: 1.5, borderColor: '#475569', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, marginHorizontal: 12, marginBottom: 8, backgroundColor: '#1e293b' },
+  insightLabel: { color: '#e5e7eb', fontWeight: '600', fontSize: 12, marginBottom: 8 },
   insightRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
   insightSmall: { color: '#9ca3af', fontSize: 11 },
   insightBig: { color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 2 },
@@ -748,8 +909,8 @@ const styles = StyleSheet.create({
   changeCat: { color: '#fff', fontWeight: '600', fontSize: 13 },
   changeMeta: { color: '#9ca3af', fontSize: 11, marginTop: 2 },
   changePercent: { fontWeight: '700', fontSize: 12 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modalContent: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '85%', backgroundColor: '#1e293b' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  modalContent: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 20, paddingHorizontal: 16, paddingBottom: 24, maxHeight: '90%', backgroundColor: '#1e293b', borderTopWidth: 2, borderTopColor: '#475569' },
   modalTitle: { fontSize: 18, fontWeight: '700', color: '#fff', marginBottom: 16 },
   monthOption: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#334155' },
   monthOptionText: { color: '#fff', fontSize: 14 },
