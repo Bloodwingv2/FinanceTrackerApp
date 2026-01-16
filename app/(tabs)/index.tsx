@@ -383,51 +383,96 @@ const FinanceTracker: React.FC = () => {
 
   const exportToJSON = async () => {
     try {
-      // Export as JSON instead of SQLite for broader compatibility
-      const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
-      const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.json`;
-      
-      // Write to cache directory
-      const cacheDir = (FileSystem as any).cacheDirectory;
-      if (cacheDir) {
-        const fileUri = `${cacheDir}${filename}`;
-        await FileSystem.writeAsStringAsync(fileUri, jsonString);
-        
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(fileUri, {
-            mimeType: 'application/json',
-            dialogTitle: `Share ${filename}`,
-          });
-          Alert.alert('Success', 'Data exported and ready to share!');
-          return;
-        }
-      }
-      
-      // Fallback: Share as text
-      await Share.share({
-        message: jsonString,
-        title: filename,
-      });
-      Alert.alert('Export Ready', `${filename} is ready to share!`);
+      Alert.alert(
+        'Export Data',
+        'Choose export format:',
+        [
+          {
+            text: 'TXT (Android Compatible)',
+            onPress: async () => {
+              try {
+                const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
+                const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.txt`;
+                
+                const cacheDir = (FileSystem as any).cacheDirectory;
+                if (cacheDir) {
+                  const fileUri = `${cacheDir}${filename}`;
+                  await FileSystem.writeAsStringAsync(fileUri, jsonString);
+                  
+                  if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(fileUri, {
+                      mimeType: 'text/plain',
+                      dialogTitle: `Share ${filename}`,
+                    });
+                    Alert.alert('Success', 'Data exported as TXT file!');
+                    return;
+                  }
+                }
+                
+                // Fallback
+                await Share.share({
+                  message: jsonString,
+                  title: filename,
+                });
+                Alert.alert('Success', 'Data exported and ready to share!');
+              } catch (error) {
+                Alert.alert('Error', 'Failed to export: ' + (error as Error).message);
+              }
+            }
+          },
+          {
+            text: 'JSON',
+            onPress: async () => {
+              try {
+                const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
+                const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.json`;
+                
+                const cacheDir = (FileSystem as any).cacheDirectory;
+                if (cacheDir) {
+                  const fileUri = `${cacheDir}${filename}`;
+                  await FileSystem.writeAsStringAsync(fileUri, jsonString);
+                  
+                  if (await Sharing.isAvailableAsync()) {
+                    await Sharing.shareAsync(fileUri, {
+                      mimeType: 'application/json',
+                      dialogTitle: `Share ${filename}`,
+                    });
+                    Alert.alert('Success', 'Data exported as JSON file!');
+                    return;
+                  }
+                }
+                
+                // Fallback
+                await Share.share({
+                  message: jsonString,
+                  title: filename,
+                });
+                Alert.alert('Success', 'Data exported and ready to share!');
+              } catch (error) {
+                Alert.alert('Error', 'Failed to export: ' + (error as Error).message);
+              }
+            }
+          },
+          { text: 'Cancel', style: 'cancel' }
+        ]
+      );
     } catch (error) {
-      if ((error as any).message !== 'User did not share') {
-        Alert.alert('Error', 'Failed to export data: ' + (error as Error).message);
-      }
+      Alert.alert('Error', 'Failed to export data: ' + (error as Error).message);
     }
   };
 
   const importFromJSON = async () => {
     try {
-      // Support both SQLite .db files and JSON files
+      // Support both .txt and .json files (and database files)
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/json', 'application/octet-stream', 'application/x-sqlite3']
+        type: ['application/json', 'text/plain', 'application/octet-stream', 'application/x-sqlite3']
       });
       
       if (!result.canceled && result.assets && result.assets[0]) {
         const fileUri = result.assets[0].uri;
         const filename = result.assets[0].name;
         
-        // Check if it's a database file or JSON
+        // Check if it's a database file
         if (filename.endsWith('.db')) {
           // For now, show instructions to replace database
           Alert.alert(
@@ -438,7 +483,7 @@ const FinanceTracker: React.FC = () => {
           return;
         }
         
-        // Handle JSON import
+        // Handle JSON and TXT import
         const content = await (await fetch(fileUri)).text();
         const data = JSON.parse(content);
         
@@ -826,7 +871,7 @@ export default FinanceTracker;
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f172a', paddingTop: 0 },
   scrollView: { flex: 1, paddingBottom: 16 },
-  header: { padding: 16, paddingTop: 12, paddingBottom: 12, borderBottomWidth: 2, borderBottomColor: '#475569', backgroundColor: '#0f172a' },
+  header: { padding: 16, paddingTop: 24, paddingBottom: 14, borderBottomWidth: 2, borderBottomColor: '#475569', backgroundColor: '#0f172a' },
   headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   title: { fontSize: 18, fontWeight: '700', color: '#fff', flex: 1 },
   headerButtons: { flexDirection: 'row', gap: 6, justifyContent: 'flex-end' },
