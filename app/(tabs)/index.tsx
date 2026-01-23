@@ -1,72 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Modal, Alert,
-  StyleSheet, Platform, SafeAreaView, KeyboardAvoidingView, Animated,
+  Platform, SafeAreaView, KeyboardAvoidingView,
   FlatList, Switch, Share,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as db from '../db';
-
-type TransactionType = 'expense' | 'income';
-type Frequency = 'daily' | 'weekly' | 'monthly';
-type TabType = 'transactions' | 'recurring' | 'insights';
-
-interface Transaction {
-  id: number;
-  date: string;
-  description: string;
-  amount: number;
-  type: TransactionType;
-  category: string;
-  payment: string;
-}
-
-interface RecurringTransaction {
-  id: number;
-  description: string;
-  amount: number;
-  type: TransactionType;
-  category: string;
-  payment: string;
-  frequency: Frequency;
-  nextDueDate: string;
-}
-
-interface FormData {
-  date: string;
-  description: string;
-  amount: string;
-  type: TransactionType;
-  category: string;
-  payment: string;
-  isRecurring: boolean;
-  frequency: Frequency;
-  nextDueDate: string;
-}
-
-interface MonthlyInsight {
-  previousMonth: string;
-  currentTotalExpenses: number;
-  previousTotalExpenses: number;
-  expenseChange: number;
-  expensePercentChange: number;
-  currentTotalIncome: number;
-  previousTotalIncome: number;
-  incomeChange: number;
-  incomePercentChange: number;
-  categoryChanges: Array<{ category: string; current: number; previous: number; change: number; percentChange: number }>;
-}
-
-const Icon = ({ name, size = 24, color = '#fff' }: { name: string; size?: number; color?: string }) => {
-  const icons: Record<string, string> = {
-    plus: '➕', trash: '🗑️', down: '📉', up: '📈', dollar: '💰', edit: '✏️', close: '✕',
-    save: '💾', download: '⬇️', calendar: '📅', pie: '📊', database: '💾', folder: '📁',
-    repeat: '🔄', sparkles: '✨', insights: '💡', trend: '📈', upload: '⬆️'
-  };
-  return <Text style={{ fontSize: size, color }}>{icons[name] || '•'}</Text>;
-};
+import { styles } from './styles';
+import { Transaction, RecurringTransaction, FormData, MonthlyInsight, TabType, Frequency, TransactionType } from './types';
+import Icon from '../../components/Icon';
+import { TransactionItem, RecurringItem } from '../../components/TransactionItem';
 
 const FinanceTracker: React.FC = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -90,7 +35,7 @@ const FinanceTracker: React.FC = () => {
       'Public Transport', 'Gas & Fuel', 'Rent & Mortgage', 'Utilities (Electric, Water, Gas)',
       'Internet & Phone Bills', 'Subscriptions (Netflix, Spotify, etc)', 'Insurance',
       'Education & Courses', 'Entertainment & Movies', 'Travel & Vacation', 'Gifts & Donations',
-      'Pet Care', 'Other Expenses'],
+      'Pet Care', 'Radio Tax', 'Other Expenses'],
     income: ['Salary', 'Freelance Work', 'Part-time Job', 'Business Income', 'Investment Returns',
       'Dividends', 'Rental Income', 'Gift Received', 'Bonus', 'Commission', 'Other Income']
   };
@@ -125,20 +70,6 @@ const FinanceTracker: React.FC = () => {
       setRecurringTransactions(recs);
     } catch (error) {
       console.error('Error loading data:', error);
-    }
-  };
-
-  const saveData = async (txs?: Transaction[], recs?: RecurringTransaction[]) => {
-    try {
-      // Data is already saved via db methods, this is kept for compatibility
-      if (txs && txs.length > 0) {
-        // Sync transactions to db if needed
-      }
-      if (recs && recs.length > 0) {
-        // Sync recurring to db if needed
-      }
-    } catch (error) {
-      console.error('Error saving data:', error);
     }
   };
 
@@ -393,12 +324,12 @@ const FinanceTracker: React.FC = () => {
               try {
                 const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
                 const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.txt`;
-                
+
                 const cacheDir = (FileSystem as any).cacheDirectory;
                 if (cacheDir) {
                   const fileUri = `${cacheDir}${filename}`;
                   await FileSystem.writeAsStringAsync(fileUri, jsonString);
-                  
+
                   if (await Sharing.isAvailableAsync()) {
                     await Sharing.shareAsync(fileUri, {
                       mimeType: 'text/plain',
@@ -408,7 +339,7 @@ const FinanceTracker: React.FC = () => {
                     return;
                   }
                 }
-                
+
                 // Fallback
                 await Share.share({
                   message: jsonString,
@@ -426,12 +357,12 @@ const FinanceTracker: React.FC = () => {
               try {
                 const jsonString = JSON.stringify({ transactions, recurringTransactions }, null, 2);
                 const filename = `finance-tracker-${new Date().toISOString().split('T')[0]}.json`;
-                
+
                 const cacheDir = (FileSystem as any).cacheDirectory;
                 if (cacheDir) {
                   const fileUri = `${cacheDir}${filename}`;
                   await FileSystem.writeAsStringAsync(fileUri, jsonString);
-                  
+
                   if (await Sharing.isAvailableAsync()) {
                     await Sharing.shareAsync(fileUri, {
                       mimeType: 'application/json',
@@ -441,7 +372,7 @@ const FinanceTracker: React.FC = () => {
                     return;
                   }
                 }
-                
+
                 // Fallback
                 await Share.share({
                   message: jsonString,
@@ -467,11 +398,11 @@ const FinanceTracker: React.FC = () => {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/json', 'text/plain', 'application/octet-stream', 'application/x-sqlite3']
       });
-      
+
       if (!result.canceled && result.assets && result.assets[0]) {
         const fileUri = result.assets[0].uri;
         const filename = result.assets[0].name;
-        
+
         // Check if it's a database file
         if (filename.endsWith('.db')) {
           // For now, show instructions to replace database
@@ -482,15 +413,15 @@ const FinanceTracker: React.FC = () => {
           );
           return;
         }
-        
+
         // Handle JSON and TXT import
         const content = await (await fetch(fileUri)).text();
         const data = JSON.parse(content);
-        
+
         // Handle both formats: { transactions: [...], recurringTransactions: [...] } and just [...]
         let txs: Transaction[] = [];
         let recs: RecurringTransaction[] = [];
-        
+
         if (Array.isArray(data)) {
           // Format: just an array of transactions
           txs = data;
@@ -503,7 +434,7 @@ const FinanceTracker: React.FC = () => {
           Alert.alert('Error', 'Invalid JSON format. Expected transactions array or { transactions: [...] } object.');
           return;
         }
-        
+
         Alert.alert(
           'Import Data',
           `Found ${txs.length} transactions and ${recs.length} recurring transactions.\n\nHow would you like to import?`,
@@ -520,7 +451,7 @@ const FinanceTracker: React.FC = () => {
                     ...recurringTransactions,
                     ...recs.map((rt: RecurringTransaction) => ({ ...rt, id: Math.max(...recurringTransactions.map((x: RecurringTransaction) => x.id), 0) + Math.random() }))
                   ];
-                  
+
                   // Save merged data to database
                   for (const tx of txs) {
                     await db.addTransaction(tx);
@@ -528,7 +459,7 @@ const FinanceTracker: React.FC = () => {
                   for (const rt of recs) {
                     await db.addRecurringTransaction(rt);
                   }
-                  
+
                   setTransactions(mergedTx);
                   setRecurringTransactions(mergedRec);
                   Alert.alert('Success', 'Data merged successfully!');
@@ -542,14 +473,14 @@ const FinanceTracker: React.FC = () => {
               onPress: async () => {
                 try {
                   await db.clearAllData();
-                  
+
                   for (const tx of txs) {
                     await db.addTransaction(tx);
                   }
                   for (const rt of recs) {
                     await db.addRecurringTransaction(rt);
                   }
-                  
+
                   setTransactions(txs);
                   setRecurringTransactions(recs);
                   Alert.alert('Success', 'Data replaced successfully!');
@@ -666,7 +597,7 @@ const FinanceTracker: React.FC = () => {
           {showForm && (
             <View style={styles.formContainer}>
               <Text style={styles.formTitle}>{editingId ? 'Edit' : 'New'} Transaction</Text>
-              
+
               <View style={styles.typeSelector}>
                 <TouchableOpacity style={[styles.typeButton, formData.type === 'expense' && styles.typeButtonActive]} onPress={() => setFormData({ ...formData, type: 'expense', category: 'Groceries' })} accessibilityLabel="Expense">
                   <Text style={formData.type === 'expense' ? styles.typeTextActive : styles.typeText}>Expense</Text>
@@ -723,7 +654,7 @@ const FinanceTracker: React.FC = () => {
 
               <Text style={styles.label}>Category</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {categories[formData.type].slice(0, 8).map(cat => (
+                {categories[formData.type].map(cat => (
                   <TouchableOpacity key={cat} style={[styles.categoryChip, formData.category === cat && styles.categoryChipActive]} onPress={() => setFormData({ ...formData, category: cat })} accessibilityLabel={cat}>
                     <Text style={[styles.categoryChipText, formData.category === cat && styles.categoryChipTextActive]} numberOfLines={1}>{cat}</Text>
                   </TouchableOpacity>
@@ -760,19 +691,7 @@ const FinanceTracker: React.FC = () => {
                 <Text style={styles.emptyText}>No transactions</Text>
               ) : (
                 sortedTransactions.map((t) => (
-                  <View key={t.id} style={[styles.transactionItem, { backgroundColor: '#1e293b' }]}>
-                    <View style={styles.txLeft}>
-                      <Text style={styles.txDate}>{new Date(t.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</Text>
-                      <View><Text style={styles.txDesc}>{t.description}</Text><Text style={styles.txCat}>{t.category}</Text></View>
-                    </View>
-                    <View style={styles.txRight}>
-                      <Text style={[styles.txAmount, t.type === 'income' && styles.txIncomeAmount]}>{t.type === 'expense' ? '-' : '+'}€{Math.abs(t.amount).toFixed(2)}</Text>
-                      <View style={styles.txActions}>
-                        <TouchableOpacity onPress={() => handleEdit(t)} accessibilityLabel="Edit"><Text>✏️</Text></TouchableOpacity>
-                        <TouchableOpacity onPress={() => handleDelete(t.id)} accessibilityLabel="Delete"><Text>🗑️</Text></TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
+                  <TransactionItem key={t.id} item={t} onEdit={handleEdit} onDelete={handleDelete} />
                 ))
               )}
             </View>
@@ -785,19 +704,7 @@ const FinanceTracker: React.FC = () => {
                 <Text style={styles.emptyText}>No recurring transactions</Text>
               ) : (
                 recurringTransactions.map((rt) => (
-                  <View key={rt.id} style={[styles.transactionItem, { backgroundColor: '#1e293b' }]}>
-                    <View style={styles.txLeft}>
-                      <Text style={styles.recFreq}>{rt.frequency.toUpperCase()}</Text>
-                      <View><Text style={styles.txDesc}>{rt.description}</Text><Text style={styles.txCat}>Next: {new Date(rt.nextDueDate).toLocaleDateString('en-GB')}</Text></View>
-                    </View>
-                    <View style={styles.txRight}>
-                      <Text style={[styles.txAmount, rt.type === 'income' && styles.txIncomeAmount]}>{rt.type === 'expense' ? '-' : '+'}€{Math.abs(rt.amount).toFixed(2)}</Text>
-                      <View style={styles.txActions}>
-                        <TouchableOpacity onPress={() => handleEditRecurring(rt)} accessibilityLabel="Edit"><Text>✏️</Text></TouchableOpacity>
-                        <TouchableOpacity onPress={() => handleDeleteRecurring(rt.id)} accessibilityLabel="Delete"><Text>🗑️</Text></TouchableOpacity>
-                      </View>
-                    </View>
-                  </View>
+                  <RecurringItem key={rt.id} item={rt} onEdit={handleEditRecurring} onDelete={handleDeleteRecurring} />
                 ))
               )}
             </View>
@@ -870,99 +777,3 @@ const FinanceTracker: React.FC = () => {
 };
 
 export default FinanceTracker;
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0e27', paddingTop: 0 },
-  scrollView: { flex: 1, paddingBottom: 16 },
-  header: { padding: 16, paddingTop: 40, paddingBottom: 20, backgroundColor: '#0a0e27', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5 },
-  headerTitle: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
-  title: { fontSize: 28, fontWeight: '800', color: '#ffffff', flex: 1, letterSpacing: -0.5 },
-  subtitle: { fontSize: 12, fontWeight: '500', color: '#a0aec0', marginTop: 4, fontStyle: 'italic' },
-  headerButtons: { flexDirection: 'row', gap: 8, justifyContent: 'flex-end' },
-  monthButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#1a2247', padding: 12, borderRadius: 12, marginRight: 4 },
-  monthButtonText: { color: '#a0aec0', fontWeight: '600', fontSize: 13 },
-  exportButton: { backgroundColor: '#1a2247', padding: 12, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginLeft: 4 },
-  statsContainer: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 14, paddingVertical: 16, gap: 12, marginBottom: 8 },
-  statCard: { width: '48%', padding: 16, borderRadius: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 5 },
-  expenseCard: { backgroundColor: '#2d1619' },
-  incomeCard: { backgroundColor: '#1a2e1a' },
-  balanceCard: { backgroundColor: '#162644' },
-  totalCard: { backgroundColor: '#2d1f3d' },
-  statLabel: { color: '#a0aec0', fontSize: 12, marginBottom: 6, fontWeight: '500' },
-  statValue: { color: '#ffffff', fontSize: 20, fontWeight: '800' },
-  categoryContainer: { marginHorizontal: 14, marginVertical: 12, paddingHorizontal: 14, paddingVertical: 16, borderRadius: 16, backgroundColor: '#1a2247', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 3 },
-  categoryTitle: { color: '#e2e8f0', fontSize: 14, fontWeight: '700', marginBottom: 14 },
-  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  categoryItem: { width: '48%', padding: 13, borderRadius: 12, backgroundColor: '#243156', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  categoryName: { color: '#a0aec0', fontSize: 12, fontWeight: '500' },
-  categoryAmount: { color: '#ffffff', fontSize: 15, fontWeight: '800', marginTop: 6 },
-  categoryPercent: { color: '#718096', fontSize: 11, marginTop: 4 },
-  addButton: { marginHorizontal: 14, marginVertical: 12, borderRadius: 14, overflow: 'hidden' },
-  addButtonGradient: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, paddingHorizontal: 16, borderRadius: 14, backgroundColor: '#3b82f6' },
-  addButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
-  formContainer: { marginHorizontal: 14, marginVertical: 12, paddingHorizontal: 16, paddingVertical: 18, borderRadius: 16, backgroundColor: '#1a2247', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 3 },
-  formTitle: { fontSize: 17, fontWeight: '700', color: '#ffffff', marginBottom: 16 },
-  typeSelector: { flexDirection: 'row', gap: 10, marginBottom: 14 },
-  typeButton: { flex: 1, padding: 12, borderRadius: 10, backgroundColor: '#243156', alignItems: 'center' },
-  typeButtonActive: { backgroundColor: '#ef4444' },
-  typeButtonActiveIncome: { backgroundColor: '#10b981' },
-  typeText: { color: '#a0aec0', fontWeight: '600', fontSize: 13 },
-  typeTextActive: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
-  checkboxContainer: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#243156', padding: 12, borderRadius: 10, marginBottom: 14 },
-  checkboxLabel: { color: '#e2e8f0', fontWeight: '600', fontSize: 13 },
-  label: { color: '#e2e8f0', fontSize: 13, fontWeight: '600', marginBottom: 8, marginTop: 10 },
-  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#243156', borderWidth: 1, borderColor: '#334a6e', borderRadius: 10, paddingHorizontal: 12 },
-  input: { flex: 1, backgroundColor: '#243156', borderWidth: 1, borderColor: '#334a6e', borderRadius: 10, padding: 12, color: '#ffffff', fontSize: 15, marginBottom: 0 },
-  suggestionItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#334a6e' },
-  suggestionDesc: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
-  suggestionMeta: { color: '#a0aec0', fontSize: 12, marginTop: 2 },
-  frequencyButtons: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  freqButton: { flex: 1, padding: 11, backgroundColor: '#243156', borderRadius: 10, alignItems: 'center' },
-  freqButtonActive: { backgroundColor: '#3b82f6' },
-  freqButtonText: { color: '#a0aec0', fontWeight: '600', fontSize: 12 },
-  freqButtonTextActive: { color: '#ffffff', fontWeight: '600', fontSize: 12 },
-  categoryChip: { backgroundColor: '#243156', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, marginRight: 8, borderWidth: 0 },
-  categoryChipActive: { backgroundColor: '#3b82f6' },
-  categoryChipText: { color: '#a0aec0', fontSize: 12, fontWeight: '500' },
-  categoryChipTextActive: { color: '#ffffff', fontWeight: '600', fontSize: 12 },
-  saveButton: { backgroundColor: '#10b981', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 15, borderRadius: 12, marginTop: 14 },
-  saveButtonText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
-  cancelButton: { backgroundColor: '#243156', padding: 12, borderRadius: 10, marginTop: 10, alignItems: 'center' },
-  cancelButtonText: { color: '#a0aec0', fontSize: 14, fontWeight: '600' },
-  tabsContainer: { flexDirection: 'row', paddingHorizontal: 14, paddingVertical: 10, gap: 8, marginBottom: 8 },
-  tab: { flex: 1, flexDirection: 'row', paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, backgroundColor: '#1a2247', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  tabActive: { backgroundColor: '#3b82f6' },
-  tabText: { color: '#a0aec0', fontWeight: '600', fontSize: 11 },
-  tabTextActive: { color: '#ffffff', fontWeight: '700', fontSize: 11 },
-  listContainer: { paddingHorizontal: 14, paddingVertical: 8 },
-  transactionItem: { borderWidth: 0, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 10, marginHorizontal: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1a2247', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  txLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 11 },
-  txDate: { color: '#a0aec0', fontSize: 12, fontWeight: '500', minWidth: 50 },
-  txDesc: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
-  txCat: { color: '#a0aec0', fontSize: 12, marginTop: 3 },
-  txRight: { alignItems: 'flex-end' },
-  txAmount: { color: '#ff6b6b', fontSize: 15, fontWeight: '800', marginBottom: 4 },
-  txIncomeAmount: { color: '#51cf66' },
-  txActions: { flexDirection: 'row', gap: 8 },
-  recFreq: { color: '#a78bfa', fontSize: 10, fontWeight: '700', textTransform: 'uppercase', minWidth: 50 },
-  emptyText: { color: '#a0aec0', fontSize: 16, textAlign: 'center', paddingVertical: 40 },
-  emptyContainer: { alignItems: 'center', paddingVertical: 60 },
-  insightCard: { borderWidth: 0, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, marginHorizontal: 14, marginBottom: 10, backgroundColor: '#1a2247', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  insightLabel: { color: '#e2e8f0', fontWeight: '600', fontSize: 13, marginBottom: 10 },
-  insightRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' },
-  insightSmall: { color: '#a0aec0', fontSize: 12 },
-  insightBig: { color: '#ffffff', fontSize: 20, fontWeight: '800', marginTop: 4 },
-  insightDelta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  insightDeltaText: { fontWeight: '700', fontSize: 13 },
-  changeItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#334a6e' },
-  changeCat: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
-  changeMeta: { color: '#a0aec0', fontSize: 12, marginTop: 2 },
-  changePercent: { fontWeight: '700', fontSize: 13 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  modalContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 24, paddingHorizontal: 18, paddingBottom: 28, maxHeight: '90%', backgroundColor: '#1a2247', borderTopWidth: 0, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 8 },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#ffffff', marginBottom: 18 },
-  monthOption: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#334a6e' },
-  monthOptionText: { color: '#e2e8f0', fontSize: 15, fontWeight: '500' },
-  closeButton: { backgroundColor: '#243156', padding: 13, borderRadius: 10, marginTop: 12, alignItems: 'center' },
-  closeButtonText: { color: '#a0aec0', fontSize: 14, fontWeight: '600' },
-});
